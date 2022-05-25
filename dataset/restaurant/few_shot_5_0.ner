@@ -1,0 +1,40 @@
+O O O O O B-Rating B-Dish B-Location I-Location I-Location
+O O O B-Location B-Rating O O B-Amenity
+O O O O O B-Rating I-Rating B-Cuisine I-Cuisine O O O O O B-Hours I-Hours
+O O O O O O B-Location O O O O B-Amenity B-Rating O O O B-Amenity I-Amenity
+O O O O B-Rating B-Cuisine
+O B-Restaurant_Name O B-Amenity
+O O O B-Amenity I-Amenity B-Location I-Location I-Location I-Location
+O O O O B-Location I-Location I-Location O O B-Amenity I-Amenity
+O O O B-Amenity I-Amenity I-Amenity O B-Cuisine B-Amenity B-Location I-Location I-Location O O O
+O O B-Amenity I-Amenity I-Amenity I-Amenity B-Restaurant_Name I-Restaurant_Name I-Restaurant_Name O O B-Amenity I-Amenity I-Amenity
+O O O B-Restaurant_Name I-Restaurant_Name O B-Location I-Location
+O O O O O B-Location B-Restaurant_Name I-Restaurant_Name
+O O B-Restaurant_Name O O O O O O B-Location I-Location
+O O O B-Amenity I-Amenity O O O B-Dish O O B-Location I-Location I-Location
+O O B-Location O O O B-Amenity I-Amenity
+O O O O B-Restaurant_Name I-Restaurant_Name O
+O O B-Location B-Restaurant_Name I-Restaurant_Name
+O O O O O B-Restaurant_Name
+O O B-Restaurant_Name I-Restaurant_Name
+O O O B-Location B-Restaurant_Name O
+B-Price O O O
+O O O O O B-Price I-Price O
+O B-Cuisine O O O O B-Price I-Price I-Price
+O O O O B-Price O O B-Location I-Location I-Location
+O O O B-Location B-Amenity I-Amenity O O O O B-Price I-Price
+O O O B-Restaurant_Name B-Location I-Location I-Location O O B-Hours I-Hours I-Hours I-Hours
+O O B-Cuisine O B-Location I-Location I-Location O O B-Amenity O B-Hours
+O O O O O B-Rating B-Cuisine O O O O B-Amenity I-Amenity O O O B-Hours I-Hours I-Hours
+O O O O O O B-Hours I-Hours I-Hours I-Hours O O B-Amenity I-Amenity O O B-Location I-Location I-Location O O
+O O O O O B-Restaurant_Name I-Restaurant_Name B-Location I-Location O O B-Hours I-Hours
+O O O O O O B-Hours O O B-Price O B-Dish
+O O O O B-Restaurant_Name O B-Dish O O
+O O O B-Dish I-Dish
+O O O O O O B-Amenity I-Amenity O O B-Dish B-Location I-Location
+O O O O O B-Dish O O B-Amenity B-Cuisine O
+O O B-Location B-Cuisine O O O B-Amenity I-Amenity
+O O B-Cuisine I-Cuisine O B-Location I-Location I-Location I-Location
+O O B-Cuisine O O B-Location
+O O O B-Cuisine O O B-Location O O O O B-Rating I-Rating I-Rating I-Rating
+O O O O O O B-Cuisine O O O O O O O B-Price I-Price I-Price

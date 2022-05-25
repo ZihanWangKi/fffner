@@ -69,45 +69,33 @@ class FFFNerClassifier(tf.keras.Model):
     self.head_name_2 = head_name_2
     self.initializer = initializer
     self.use_encoder_pooler = use_encoder_pooler
+    assert use_encoder_pooler and not cls_head, "Customized pooling & classification function is used"
 
     # We want to use the inputs of the passed network as the inputs to this
     # Model. To do this, we need to keep a handle to the network inputs for use
     # when we construct the Model object at the end of init.
     inputs = network.inputs
 
-    if use_encoder_pooler:
-      # Because we have a copy of inputs to create this Model object, we can
-      # invoke the Network object with its own input tensors to start the Model.
-      outputs = network(inputs)
-      if isinstance(outputs, list):
+    outputs = network(inputs)
+    if isinstance(outputs, list):
         cls_inputs = outputs[1]
-      else:
+    else:
         cls_inputs = outputs['pooled_output']
-      cls_inputs = tf.keras.layers.Dropout(rate=dropout_rate)(cls_inputs)
-    else:
-      assert False, "NOOOOOO"
-      outputs = network(inputs)
-      if isinstance(outputs, list):
-        cls_inputs = outputs[0]
-      else:
-        cls_inputs = outputs['sequence_output']
+    cls_inputs = tf.keras.layers.Dropout(rate=dropout_rate)(cls_inputs)
 
-    if cls_head:
-      assert False
-      classifier = cls_head
-    else:
-      classifier_1 = layers.ClassificationHead(
-          inner_dim=0 if use_encoder_pooler else cls_inputs.shape[-1],
-          num_classes=num_classes_1,
-          initializer=initializer,
-          dropout_rate=dropout_rate,
-          name=head_name_1)
-      classifier_2 = layers.ClassificationHead(
-          inner_dim=0 if use_encoder_pooler else cls_inputs.shape[-1],
-          num_classes=num_classes_2,
-          initializer=initializer,
-          dropout_rate=dropout_rate,
-          name=head_name_2)
+    classifier_1 = layers.ClassificationHead(
+        inner_dim=0 if use_encoder_pooler else cls_inputs.shape[-1],
+        num_classes=num_classes_1,
+        initializer=initializer,
+        dropout_rate=dropout_rate,
+        name=head_name_1)
+    classifier_2 = layers.ClassificationHead(
+        inner_dim=0 if use_encoder_pooler else cls_inputs.shape[-1],
+        num_classes=num_classes_2,
+        initializer=initializer,
+        dropout_rate=dropout_rate,
+        name=head_name_2)
+
 
     predictions_1 = classifier_1(cls_inputs[:, 0, :])
     predictions_2 = classifier_2(cls_inputs[:, 1, :])

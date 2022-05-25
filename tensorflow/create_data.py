@@ -1,3 +1,4 @@
+import json
 import os
 
 import collections
@@ -9,22 +10,9 @@ from tqdm import tqdm
 import numpy as np
 import tensorflow as tf
 
-label_to_entity_type_index = {
-    'PER': 0,
-    'ORG': 1,
-    'LOC': 2,
-    'MISC': 3
-}
-entity_type_names = [
-    "Person",
-    "Location",
-    "Organization",
-    "Other"
-]
-
 class NERDataset:
     def __init__(self, words_path, labels_path, tokenizer, is_train, no_parentheses,
-                 prediction_together, cls_on_token, not_mask):
+                 prediction_together, cls_on_token, not_mask, label_to_entity_type_index):
         self.words_path = words_path
         self.labels_path = labels_path
         self.tokenizer = tokenizer
@@ -47,6 +35,7 @@ class NERDataset:
         self.all_labels = []
         self.max_seq_len_in_data = 0
         self.max_len = 128
+        self.label_to_entity_type_index = label_to_entity_type_index
 
     def iter_read(self):
         with open(self.words_path) as f1, open(self.labels_path) as f2:
@@ -55,7 +44,6 @@ class NERDataset:
                 labels = l2.strip().split(' ')
                 tokens = ["(" if token == "[" else token for token in tokens]
                 tokens = [")" if token == "]" else token for token in tokens]
-                # tokens = ["WEBSITE" if token.startswith("https://") or token.startswith("http://") else token for token in tokens]
                 yield tokens, labels
 
     def tokenize_word(self, word):
@@ -138,8 +126,8 @@ class NERDataset:
             for ids in tokenized_word_list[span_end + 1:]:
                 input_ids.extend(ids)
             input_ids.append(self.sep_token_id)
-            is_entity_label = span_label in label_to_entity_type_index
-            entity_type_label = label_to_entity_type_index.get(span_label, 0)
+            is_entity_label = span_label in self.label_to_entity_type_index
+            entity_type_label = self.label_to_entity_type_index.get(span_label, 0)
             yield self.process_to_input(input_ids, cls_token_pos, span_start_pos,
                                         is_entity_label, entity_type_label,
                                         sid, span_start, span_end)
@@ -163,7 +151,7 @@ class NERDataset:
                 pass
             else:
                 assert False, bio_labels
-        spans = list(filter(lambda x: x[2] in label_to_entity_type_index.keys(), spans))
+        spans = list(filter(lambda x: x[2] in self.label_to_entity_type_index.keys(), spans))
         return spans
 
     def collate_fn(self, batch):
@@ -181,19 +169,7 @@ class NERDataset:
         desc = "prepare data for training" if self.is_train else "prepare data for testing"
         total_missed_entities = 0
         total_entities = 0
-        min_span_len = 100
-        max_span_len = -1
-        if self.is_train:
-            for sid, (tokens, labels) in enumerate(self.iter_read()):
-                entity_spans = self.bio_labels_to_spans(labels)
-                for start, end, ent_type in entity_spans:
-                    min_span_len = min(min_span_len, end - start + 1)
-                    max_span_len = max(max_span_len, end - start + 1)
-            if min_span_len != 1 or max_span_len > 10:
-                print(f"****************Span length are ({min_span_len}, {max_span_len}), which is unusual****************")
-        else:
-            min_span_len = 1
-            max_span_len = -1
+        min_span_len = 1
         max_span_len = -1
         for sid, (tokens, labels) in tqdm(enumerate(self.iter_read()), desc=desc):
             self.all_tokens.append(tokens)
@@ -201,16 +177,14 @@ class NERDataset:
             entity_spans = self.bio_labels_to_spans(labels)
             entity_spans_dict = {(start, end): ent_type for start, end, ent_type in entity_spans}
             num_entities = len(entity_spans_dict)
-            num_negatives = int((len(tokens) + num_entities * 10) * negative_multiplier / 10)
+            num_negatives = int((len(tokens) + num_entities * 10) * negative_multiplier)
             num_negatives = min(num_negatives, len(tokens) * (len(tokens) + 1) // 2)
-            if negative_multiplier < 0:
-                num_negatives = len(tokens) * (len(tokens) + 1) // 2
-            min_words = min_span_len
-            max_words = max_span_len if max_span_len >= 1 else len(tokens)
+            min_words = 1
+            max_words = len(tokens)
             total_entities += len(entity_spans)
 
             spans = []
-            if biased_negatives == 1 or biased_negatives == 2:
+            if biased_negatives == 1:
                 is_token_entity_prefix = [0] * (len(tokens) + 1)
                 for start, end, _ in entity_spans:
                     for i in range(start, end + 1):
@@ -233,11 +207,6 @@ class NERDataset:
                                 possible_negative_spans_probs.append(2.718 ** intersection_size)
                             else:
                                 possible_negative_spans_probs.append(intersection_size)
-                if biased_negatives == 2:
-                    reduced_probs = list(set(possible_negative_spans_probs))
-                    ranks = rankdata(reduced_probs)
-                    prob_to_true_prob = {prob: 1. / rank for prob, rank in zip(reduced_probs, ranks)}
-                    possible_negative_spans_probs = [prob_to_true_prob[p] for p in possible_negative_spans_probs]
 
                 if len(possible_negative_spans) > 0 and num_negatives > 0:
                     possible_negative_spans_probs = np.array(possible_negative_spans_probs) / np.sum(possible_negative_spans_probs)
@@ -268,22 +237,29 @@ class NERDataset:
         return self.data[idx]
 
 if __name__ == '__main__':
+    path_to_data_folder = "../"
+    dataset_name = "conll2003"
+    dataset = os.path.join(path_to_data_folder, dataset_name)
     train_file = "few_shot_5_0"
-    train_file = "train"
     test_file = "test"
     tokenizer = transformers.AutoTokenizer.from_pretrained("bert-base-uncased")
-    train_dataset = NERDataset(words_path=f"conll2003/{train_file}.words", labels_path=f"conll2003/{train_file}.ner",
+    entity_map = json.load(open(os.path.join(dataset, "entity_map.json")))
+    label_to_entity_type_index = {k, i in enumerate(list(entity_map.keys()))}
+    train_dataset = NERDataset(words_path=os.path.join(dataset, train_file + ".words"),
+                               labels_path=os.path.join(dataset, train_file + ".ner"),
                                tokenizer=tokenizer, is_train=True, no_parentheses=False,
-                               prediction_together=False, cls_on_token=False, not_mask=False)
-    eval_dataset = NERDataset(words_path=f"conll2003/{test_file}.words",
-                              labels_path=f"conll2003/{test_file}.ner",
+                               prediction_together=False, cls_on_token=False, not_mask=False,
+                               label_to_entity_type_index=label_to_entity_type_index)
+    eval_dataset = NERDataset(words_path=os.path.join(dataset, test_file + ".words"),
+                               labels_path=os.path.join(dataset, test_file + ".ner"),
                                tokenizer=tokenizer, is_train=False, no_parentheses=False,
-                               prediction_together=False, cls_on_token=False, not_mask=False)
-    train_dataset.prepare(negative_multiplier=30, biased_negatives=1)
+                               prediction_together=False, cls_on_token=False, not_mask=False,
+                              label_to_entity_type_index=label_to_entity_type_index)
+    train_dataset.prepare(negative_multiplier=3, biased_negatives=1)
     print(train_dataset.data[0])
     train_data = train_dataset.collate_fn(train_dataset.data)
     print(train_data.keys())
-    eval_dataset.prepare(negative_multiplier=30, biased_negatives=1)
+    eval_dataset.prepare(negative_multiplier=3, biased_negatives=1)
     eval_data = eval_dataset.collate_fn(eval_dataset.data)
 
 
@@ -323,5 +299,5 @@ if __name__ == '__main__':
         writer.close()
 
 
-    file_based_convert_examples_to_features(train_data, f"{train_file}.tf_record")
-    file_based_convert_examples_to_features(eval_data, f"{test_file}.tf_record")
+    file_based_convert_examples_to_features(train_data, f"{dataset_name}_{train_file}.tf_record")
+    file_based_convert_examples_to_features(eval_data, f"{dataset_name}_{test_file}.tf_record")

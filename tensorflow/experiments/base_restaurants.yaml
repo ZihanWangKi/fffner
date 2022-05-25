@@ -2,7 +2,7 @@ task:
   init_checkpoint: 'bert-uncased'
   model:
     num_classes_1: 2
-    num_classes_2: 4
+    num_classes_2: 8
     encoder:
       type: any
   metric_type: 'accuracy'
@@ -38,9 +38,5 @@ trainer:
       type: polynomial
   steps_per_loop: 100
   summary_interval: 100
-  # Training data size 2,335 examples, 5 epochs.
-#  train_steps: 2189
-  train_steps: 2000
+  train_steps: 4000
   validation_interval: 500
-#  # 565793
-#  validation_steps: 100

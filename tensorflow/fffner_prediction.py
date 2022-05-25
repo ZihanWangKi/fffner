@@ -15,6 +15,7 @@
 """Sentence prediction (classification) task."""
 import dataclasses
 from typing import List, Union, Optional
+from collections import defaultdict
 
 from absl import logging
 import numpy as np
@@ -170,9 +171,7 @@ class FFFNerTask(base_task.Task):
       logs.update({m.name: m.result() for m in model.metrics})
     logs.update({
       'sentence_prediction_1': outputs[0],
-        # tf.expand_dims(tf.math.argmax(outputs[0], axis=1), axis=1),
       'sentence_prediction_2': outputs[1],
-        # tf.expand_dims(tf.math.argmax(outputs[1], axis=1), axis=1),
       'labels_1':
         labels[self.label_field_1],
       'labels_2':
@@ -211,12 +210,10 @@ class FFFNerTask(base_task.Task):
     return state
 
   def reduce_aggregated_logs(self, aggregated_logs, global_step=None):
-    # if self.metric_type == 'accuracy':
-    #   return None
-    preds_1 = np.concatenate(aggregated_logs['sentence_prediction_1'], axis=0)
-    preds_1 = np.reshape(preds_1, (-1, self.task_config.model.num_classes_1))
-    preds_2 = np.concatenate(aggregated_logs['sentence_prediction_2'], axis=0)
-    preds_2 = np.reshape(preds_2, (-1, self.task_config.model.num_classes_2))
+    sentence_prediction_1 = np.concatenate(aggregated_logs['sentence_prediction_1'], axis=0)
+    sentence_prediction_1 = np.reshape(sentence_prediction_1, (-1, self.task_config.model.num_classes_1))
+    sentence_prediction_2 = np.concatenate(aggregated_logs['sentence_prediction_2'], axis=0)
+    sentence_prediction_2 = np.reshape(sentence_prediction_2, (-1, self.task_config.model.num_classes_2))
     labels_1 = np.concatenate(aggregated_logs['labels_1'], axis=0)
     labels_1 = np.reshape(labels_1, -1)
     labels_2 = np.concatenate(aggregated_logs['labels_2'], axis=0)
@@ -230,9 +227,6 @@ class FFFNerTask(base_task.Task):
     span_start = np.reshape(span_start, -1)
     span_end = np.concatenate(aggregated_logs['span_end'], axis=0)
     span_end = np.reshape(span_end, -1)
-
-    from collections import defaultdict
-    per_sid_results = defaultdict(list)
 
     def resolve(length, spans, prediction_confidence):
       used = [False] * length
@@ -271,24 +265,15 @@ class FFFNerTask(base_task.Task):
       e_x = np.exp(x - np.max(x))
       return e_x / e_x.sum(axis=0)
 
-    for id, sent_id, sp_start, sp_end, is_entity_label, is_entity_logit, entity_type_label, entity_type_logit in zip(ids,
-                                                                                                sentence_id,
-                                                                                                span_start, span_end,
-                                                                                                labels_1,
-                                                                                                preds_1,
-                                                                                                labels_2,
-                                                                                                preds_2):
+    per_sid_results = defaultdict(list)
+    for id, sent_id, sp_start, sp_end, is_entity_label, is_entity_logit, entity_type_label, entity_type_logit in zip(
+            ids, sentence_id, span_start, span_end, labels_1, sentence_prediction_1, labels_2, sentence_prediction_2):
       if sent_id > 0:
-        per_sid_results[sent_id].append((sp_start, sp_end,
-                                             is_entity_label, is_entity_logit, entity_type_label,
-                                             entity_type_logit))
-    gt = []
-    p1 = []
-    p2 = []
-    a_1 = 0
-    w_1 = 0
-    a_2 = 0
-    w_2 = 0
+        per_sid_results[sent_id].append(
+          (sp_start, sp_end, is_entity_label, is_entity_logit, entity_type_label, entity_type_logit))
+    ground_truth = []
+    prediction_1 = []
+    prediction_2 = []
     for key in sorted(list(per_sid_results.keys())):
       results = per_sid_results[key]
       gt_entities = []
@@ -297,15 +282,6 @@ class FFFNerTask(base_task.Task):
       prediction_confidence_type = {}
       length = 0
       for span_start, span_end, ground_truth, prediction, ground_truth_type, prediction_type in results:
-        # print(ground_truth, prediction, ground_truth_type, prediction_type)
-        if np.argmax(prediction) == ground_truth:
-          a_1 += 1
-        else:
-          w_1 += 1
-        if np.argmax(prediction_type) == ground_truth_type:
-          a_2 += 1
-        else:
-          w_2 += 1
         if ground_truth == 1:
           gt_entities.append((span_start, span_end, ground_truth_type))
         if prediction[1] > prediction[0]:
@@ -314,12 +290,10 @@ class FFFNerTask(base_task.Task):
         prediction_confidence_type[(span_start, span_end)] = max(softmax(prediction_type))
         length = max(length, span_end)
       length += 1
-      if length * (length + 1) != 2 * len(results):
-        print(f"Length might not be correct, probably length: {length}, num_results: {len(results)}")
-      gt.extend([(key, *x) for x in gt_entities])
-      p1.extend([(key, *x) for x in predictied_entities])
+      ground_truth.extend([(key, *x) for x in gt_entities])
+      prediction_1.extend([(key, *x) for x in predictied_entities])
       resolved_predicted = resolve(length, predictied_entities, prediction_confidence)
-      p2.extend([(key, *x) for x in resolved_predicted])
+      prediction_2.extend([(key, *x) for x in resolved_predicted])
 
     raw = get_p_r_f(gt, p1)
     resolved = get_p_r_f(gt, p2)

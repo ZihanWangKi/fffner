@@ -38,5 +38,6 @@ trainer:
       type: polynomial
   steps_per_loop: 100
   summary_interval: 100
-  train_steps: 2000
+  # 2335 * 30 / 32
+  train_steps: 2189
   validation_interval: 500

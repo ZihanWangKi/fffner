@@ -1,10 +1,10 @@
 import json
 import os
+import sys
 
 import collections
 import pickle
 
-import torch
 import transformers
 from tqdm import tqdm
 import numpy as np
@@ -132,8 +132,7 @@ class NERDataset:
                                         is_entity_label, entity_type_label,
                                         sid, span_start, span_end)
 
-    @staticmethod
-    def bio_labels_to_spans(bio_labels):
+    def bio_labels_to_spans(self, bio_labels):
         spans = []
         for i, label in enumerate(bio_labels):
             if label.startswith("B-"):
@@ -237,14 +236,14 @@ class NERDataset:
         return self.data[idx]
 
 if __name__ == '__main__':
-    path_to_data_folder = "../"
-    dataset_name = "conll2003"
+    path_to_data_folder = "../dataset"
+    dataset_name = sys.argv[1]
     dataset = os.path.join(path_to_data_folder, dataset_name)
     train_file = "few_shot_5_0"
     test_file = "test"
     tokenizer = transformers.AutoTokenizer.from_pretrained("bert-base-uncased")
     entity_map = json.load(open(os.path.join(dataset, "entity_map.json")))
-    label_to_entity_type_index = {k, i in enumerate(list(entity_map.keys()))}
+    label_to_entity_type_index = {k: i for i, k in enumerate(list(entity_map.keys()))}
     train_dataset = NERDataset(words_path=os.path.join(dataset, train_file + ".words"),
                                labels_path=os.path.join(dataset, train_file + ".ner"),
                                tokenizer=tokenizer, is_train=True, no_parentheses=False,

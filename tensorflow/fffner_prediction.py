@@ -281,12 +281,12 @@ class FFFNerTask(base_task.Task):
       prediction_confidence = {}
       prediction_confidence_type = {}
       length = 0
-      for span_start, span_end, ground_truth, prediction, ground_truth_type, prediction_type in results:
-        if ground_truth == 1:
+      for span_start, span_end, ground_truth_span, prediction_span, ground_truth_type, prediction_type in results:
+        if ground_truth_span == 1:
           gt_entities.append((span_start, span_end, ground_truth_type))
-        if prediction[1] > prediction[0]:
+        if prediction[1] > prediction_span[0]:
           predictied_entities.append((span_start, span_end, np.argmax(prediction_type).item()))
-        prediction_confidence[(span_start, span_end)] = max(softmax(prediction))
+        prediction_confidence[(span_start, span_end)] = max(softmax(prediction_span))
         prediction_confidence_type[(span_start, span_end)] = max(softmax(prediction_type))
         length = max(length, span_end)
       length += 1

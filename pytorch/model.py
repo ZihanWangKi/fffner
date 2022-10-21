@@ -1,50 +1,52 @@
 import os
 from argparse import ArgumentParser, Namespace
 
-from sklearn.metrics import confusion_matrix
-
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.nn.parallel
-import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 import torch.utils.data
 import torch.utils.data.distributed
-import torchvision.datasets as datasets
-import torchvision.models as models
-import torchvision.transforms as transforms
-
 import pytorch_lightning as pl
 from pytorch_lightning.core import LightningModule
-from pytorch_lightning.callbacks import LearningRateMonitor
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 import transformers
-import random
 from tqdm import tqdm
 from collections import defaultdict
-import json
 import pickle
-from parse_align_cls import evaluate as evaluate_cls
-from parse_align_type import evaluate as evaluate_type
-from util import get_entity_info, get_p_r_f, PATH_TO_DATA_DIR
+import json
 
-label_to_entity_type_index = {
-}
-entity_type_names = [
-]
+PATH_TO_DATA_DIR = "../dataset"
 
+def get_p_r_f(truth, pred):
+    n_pred = len(pred)
+    n_truth = len(truth)
+    n_correct = len(set(pred) & set(truth))
+    precision = 1. * n_correct / n_pred if n_pred != 0 else 0.0
+    recall = 1. * n_correct / n_truth if n_truth != 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall != 0.0 else 0.0
+    return {
+        "n_pred": n_pred,
+        "n_truth": n_truth,
+        "n_correct": n_correct,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1
+    }
 class NERDataset(torch.utils.data.Dataset):
-    def __init__(self, words_path, labels_path, tokenizer, is_train, no_parentheses,
-                 prediction_together, not_mask):
+    def __init__(self, words_path, labels_path, tokenizer, is_train,
+                 label_to_entity_type_index,
+                 ablation_not_mask, ablation_no_brackets, ablation_span_type_together):
         self.words_path = words_path
         self.labels_path = labels_path
         self.tokenizer = tokenizer
         self.is_train = is_train
-        self.no_parentheses = no_parentheses
-        self.prediction_together = prediction_together
-        self.not_mask = not_mask
+        self.label_to_entity_type_index = label_to_entity_type_index
+        self.ablation_no_brackets = ablation_no_brackets
+        self.ablation_span_type_together = ablation_span_type_together
+        self.ablation_not_mask = ablation_not_mask
+
         self.left_bracket_1 = self.tokenize_word(" [")[0]
         self.right_bracket_1 = self.tokenize_word(" ]")[0]
         self.left_bracket_2 = self.tokenize_word(" (")[0]
@@ -52,7 +54,8 @@ class NERDataset(torch.utils.data.Dataset):
         self.mask_id = self.tokenizer.mask_token_id
         self.cls_token_id = self.tokenizer.cls_token_id
         self.sep_token_id = self.tokenizer.sep_token_id
-        self.data = []  # may be very large for test
+
+        self.data = []  # may be pretty large for test
         self.id_to_sentence_infos = dict()
         self.id_counter = 0
         self.all_tokens = []
@@ -104,44 +107,43 @@ class NERDataset(torch.utils.data.Dataset):
             for ids in tokenized_word_list[: span_start]:
                 input_ids.extend(ids)
 
-            if not self.prediction_together:
-                if not self.no_parentheses:
+            if not self.ablation_span_type_together:
+                if not self.ablation_no_brackets:
                     input_ids.append(self.left_bracket_1)
                 cls_token_pos = len(input_ids)
-                input_ids.append(self.mask_id if not self.not_mask else 8487)
-                if not self.no_parentheses:
+                input_ids.append(self.mask_id if not self.ablation_not_mask else 8487)
+                if not self.ablation_no_brackets:
                     input_ids.append(self.right_bracket_1)
 
 
-            if not self.no_parentheses:
+            if not self.ablation_no_brackets:
                 input_ids.append(self.left_bracket_1)
             for ids in tokenized_word_list[span_start: span_end + 1]:
                 input_ids.extend(ids)
-            if not self.no_parentheses:
+            if not self.ablation_no_brackets:
                 input_ids.append(self.right_bracket_1)
 
-            if not self.no_parentheses:
+            if not self.ablation_no_brackets:
                 input_ids.append(self.left_bracket_1)
 
             span_start_pos = len(input_ids)
-            if self.prediction_together:
+            if self.ablation_span_type_together:
                 cls_token_pos = len(input_ids)
 
-            input_ids.append(self.mask_id if not self.not_mask else 2828)
-            if not self.no_parentheses:
+            input_ids.append(self.mask_id if not self.ablation_not_mask else 2828)
+            if not self.ablation_no_brackets:
                 input_ids.append(self.right_bracket_1)
 
             for ids in tokenized_word_list[span_end + 1:]:
                 input_ids.extend(ids)
             input_ids.append(self.sep_token_id)
-            is_entity_label = span_label in label_to_entity_type_index
-            entity_type_label = label_to_entity_type_index.get(span_label, 0)
+            is_entity_label = span_label in self.label_to_entity_type_index
+            entity_type_label = self.label_to_entity_type_index.get(span_label, 0)
             yield self.process_to_input(input_ids, cls_token_pos, span_start_pos,
                                         is_entity_label, entity_type_label,
                                         sid, span_start, span_end)
 
-    @staticmethod
-    def bio_labels_to_spans(bio_labels):
+    def bio_labels_to_spans(self, bio_labels):
         spans = []
         for i, label in enumerate(bio_labels):
             if label.startswith("B-"):
@@ -159,11 +161,10 @@ class NERDataset(torch.utils.data.Dataset):
                 pass
             else:
                 assert False, bio_labels
-        spans = list(filter(lambda x: x[2] in label_to_entity_type_index.keys(), spans))
+        spans = list(filter(lambda x: x[2] in self.label_to_entity_type_index.keys(), spans))
         return spans
 
     def collate_fn(self, batch):
-        # print(batch)
         batch = self.tokenizer.pad(
             batch,
             padding=True,
@@ -187,7 +188,7 @@ class NERDataset(torch.utils.data.Dataset):
             num_negatives = int((len(tokens) + num_entities * 10) * negative_multiplier)
             num_negatives = min(num_negatives, len(tokens) * (len(tokens) + 1) // 2)
             min_words = 1
-            max_words = len(tokens)
+            max_words = len(tokens) # this can be set lower if you believe the maximum entity length is small & you want smaller dataset -> faster training
             total_entities += len(entity_spans)
 
             spans = []
@@ -218,7 +219,7 @@ class NERDataset(torch.utils.data.Dataset):
                                                                         num_negatives,
                                                                         replace=True, p=possible_negative_spans_probs)
                     spans.extend([possible_negative_spans[x] for x in additional_negative_span_indices])
-            else :
+            else:
                 for n_words in range(min_words, max_words + 1):
                     for i in range(len(tokens) - n_words + 1):
                         j = i + n_words - 1
@@ -227,7 +228,7 @@ class NERDataset(torch.utils.data.Dataset):
 
             for instance in self.process_word_list_and_spans_to_inputs(sid, tokens, spans):
                 self.data.append(instance)
-        print(f"{total_missed_entities}/{total_entities} are missed due to length")
+        print(f"{total_missed_entities}/{total_entities} are ignored due to length")
         print(f"Total {self.__len__()} instances")
 
     def __len__(self):
@@ -255,14 +256,14 @@ class Transform(torch.nn.Module):
         return hidden_states
 
 
-class AlignWordModel(LightningModule):
+class FFFNERModel(LightningModule):
     def __init__(self, dataset_name, train_path_suffix, val_path_suffix, test_path_suffix,
                  workers, batch_size, validation_batch_size,
-                 lr, pretrained_lm, prediction_together,
+                 lr, pretrained_lm, dropout,
                  negative_multiplier,
-                 biased_negatives,
-                 dropout,
-                 no_parentheses, not_mask,
+                 ablation_not_mask,
+                 ablation_no_brackets,
+                 ablation_span_type_together,
                  **kwargs,):
         super().__init__()
         self.save_hyperparameters()
@@ -277,18 +278,18 @@ class AlignWordModel(LightningModule):
         assert os.path.exists(self.train_path_prefix + ".ner") and os.path.exists(self.val_path_prefix + ".ner") and \
                os.path.exists(self.test_path_prefix + ".ner")
 
-        self.lr = lr
+        self.workers = workers
         self.batch_size = batch_size
         self.validation_batch_size = self.batch_size if validation_batch_size is None else validation_batch_size
-        self.workers = workers
+        self.lr = lr
         self.pretrained_lm = pretrained_lm
-        self.prediction_together = prediction_together
+        self.dropout = dropout
 
         self.negative_multiplier = negative_multiplier
-        self.biased_negatives = biased_negatives
-        self.dropout = dropout
-        self.no_parentheses = no_parentheses
-        self.not_mask = not_mask
+        self.ablation_not_mask = ablation_not_mask
+        self.ablation_no_brackets = ablation_no_brackets
+        self.ablation_span_type_together = ablation_span_type_together
+
 
         self.model = transformers.AutoModelForSequenceClassification.from_pretrained(
             self.pretrained_lm,
@@ -299,12 +300,20 @@ class AlignWordModel(LightningModule):
             use_fast=True
         )
 
+        # loading dataset info
+        with open(os.path.join(PATH_TO_DATA_DIR, dataset_name, f"entity_map.json")) as f:
+            config = json.load(f)
+        self.label_to_entity_type_index = {k: i for i, k in enumerate(list(config.keys()))}
+        self.entity_type_names = list(config.values())
+
+
         self.val_dataset_obj = None
         self.test_dataset_obj = None
         self.num_epochs_passed = 0
-        self.entity_type_weight = 1.
-        entity_input = self.tokenizer(entity_type_names)
-        entity_input["cls_token_pos"] = [1] * len(entity_type_names)
+
+        ### Testing forward & obtaining hidden state size
+        entity_input = self.tokenizer(self.entity_type_names)
+        entity_input["cls_token_pos"] = [1] * len(self.entity_type_names)
         batch = self.tokenizer.pad(
             entity_input,
             padding=True,
@@ -312,7 +321,6 @@ class AlignWordModel(LightningModule):
             pad_to_multiple_of=8,
             return_tensors="pt",
         )
-        print(batch)
         self.model.eval()
         with torch.no_grad():
             out = self.forward(
@@ -324,16 +332,15 @@ class AlignWordModel(LightningModule):
         self.model.train()
         mask_token_repr = out["mask_token_repr"]
         mask_token_repr = mask_token_repr.detach().clone()
-        print(mask_token_repr)
         hidden_size = mask_token_repr.size()[1]
+
         self.cls_transform = Transform(hidden_size, 2, dropout)
-        self.cls_loss_fct = torch.nn.CrossEntropyLoss(weight=torch.tensor([1., 1.]))
+        self.cls_loss_fct = torch.nn.CrossEntropyLoss()
 
-        self.type_transform = Transform(hidden_size, len(entity_type_names), dropout)
+        self.type_transform = Transform(hidden_size, len(self.entity_type_names), dropout)
         self.type_loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
-
-
         self.train_steps = (self.hparams.max_epochs * len(self.train_dataloader()))
+
 
     def set_outputdir(self, dir):
         os.makedirs(dir, exist_ok=True)
@@ -379,7 +386,7 @@ class AlignWordModel(LightningModule):
         if is_entity_label.sum() > 0:
             entity_type_loss /= is_entity_label.sum()
 
-        loss = is_entity_loss + entity_type_loss * max(0.0, self.entity_type_weight)
+        loss = is_entity_loss + entity_type_loss
 
         acc1, = self.__accuracy(is_entity_logits, is_entity_label, topk=(1,))
         if is_entity_label.sum() > 0:
@@ -417,10 +424,10 @@ class AlignWordModel(LightningModule):
     def to_list(self, T):
         return T.cpu().detach().clone().numpy().tolist()
 
-    def naive_metric(self, per_sid_results):
+    def naive_metric(self, results):
         gt_list = []
         pd_list = []
-        for sid, span_list in per_sid_results.items():
+        for sid, span_list in results.items():
             for span_start, span_end, is_entity_label, is_entity_logit, entity_type_label, entity_type_logit in span_list:
                 if is_entity_label == 1:
                     gt_list.append((sid, span_start, span_end, entity_type_label))
@@ -431,6 +438,66 @@ class AlignWordModel(LightningModule):
         print("without type", get_p_r_f([tuple(x[: -1]) for x in gt_list], [tuple(x[: -1]) for x in pd_list]))
         print("~" * 88)
 
+    def full_metric(self, results):
+        def resolve(length, spans, prediction_confidence):
+            used = [False] * length
+            spans = sorted(spans, key=lambda x: prediction_confidence[(x[0], x[1])], reverse=True)
+            real_spans = []
+            for span_start, span_end, ent_type in spans:
+                fill = False
+                for s in range(span_start, span_end + 1):
+                    if used[s]:
+                        fill = True
+                        break
+                if not fill:
+                    real_spans.append((span_start, span_end, ent_type))
+                    for s in range(span_start, span_end + 1):
+                        used[s] = True
+            return real_spans
+
+        def softmax(x):
+            x = np.array(x)
+            e_x = np.exp(x - np.max(x))
+            return e_x / e_x.sum(axis=0)
+
+        ground_truth = []
+        prediction_1 = [] # raw predictions
+        prediction_2 = [] # resolving conflicts
+        for key in sorted(list(results.keys())):
+            single_result = results[key]
+            gt_entities = []
+            predictied_entities = []
+            prediction_confidence_span = {}
+            prediction_confidence_type = {}
+            length = 0
+            for span_start, span_end, ground_truth_span, prediction_span, ground_truth_type, prediction_type in single_result:
+                if ground_truth_span == 1:
+                    gt_entities.append((span_start, span_end, ground_truth_type))
+                if prediction_span[1] > prediction_span[0]:
+                    predictied_entities.append((span_start, span_end, np.argmax(prediction_type).item()))
+                prediction_confidence_span[(span_start, span_end)] = max(softmax(prediction_span))
+                prediction_confidence_type[(span_start, span_end)] = max(softmax(prediction_type))
+                length = max(length, span_end)
+            length += 1
+            ground_truth.extend([(key, *x) for x in gt_entities])
+            prediction_1.extend([(key, *x) for x in predictied_entities])
+            resolved_predicted = resolve(length, predictied_entities, prediction_confidence_span)
+            prediction_2.extend([(key, *x) for x in resolved_predicted])
+
+        raw = get_p_r_f(ground_truth, prediction_1)
+        resolved = get_p_r_f(ground_truth, prediction_2)
+        print("~" * 88)
+        print("raw_predictions", raw)
+        print("resolved_predictions", resolved)
+        print("~" * 88)
+        return {
+            "raw_f1": raw["f1"],
+            "raw_precision": raw["precision"],
+            "raw_recall": raw["recall"],
+            "resolved_f1": resolved["f1"],
+            "resolved_precision": resolved["precision"],
+            "resolved_recall": resolved["recall"],
+        }
 
     def eval_end(self, outputs, dataset_obj):
         ids = torch.cat([x['id'] for x in outputs])
@@ -446,16 +513,16 @@ class AlignWordModel(LightningModule):
         assert len(ids) == len(is_entity_labels) == len(is_entity_logits) == len(entity_type_labels) == len(
             entity_type_logits)
 
-        per_sid_results = defaultdict(list)
+        results = defaultdict(list)
         for id, is_entity_label, is_entity_logit, entity_type_label, entity_type_logit in zip(ids, is_entity_labels,
                                                                                               is_entity_logits,
                                                                                               entity_type_labels,
                                                                                               entity_type_logits):
             info = dataset_obj.id_to_sentence_infos[id]
-            per_sid_results[info["sid"]].append((info["span_start"], info["span_end"],
-                                                 is_entity_label, is_entity_logit, entity_type_label,
-                                                 entity_type_logit))
-        return per_sid_results, {
+            results[info["sid"]].append((info["span_start"], info["span_end"],
+                                         is_entity_label, is_entity_logit, entity_type_label,
+                                         entity_type_logit))
+        return results, {
             "ids": ids,
             "is_entity_labels": is_entity_labels,
             "is_entity_logits": is_entity_logits,
@@ -464,35 +531,32 @@ class AlignWordModel(LightningModule):
         }
 
     def validation_epoch_end(self, outputs):
-        per_sid_results, ret = self.eval_end(outputs, self.val_dataset_obj)
+        results, predictions = self.eval_end(outputs, self.val_dataset_obj)
 
-        self.naive_metric(per_sid_results)
+        evaluation_result = self.full_metric(results)
         with open(os.path.join(self.result_save_dir, "dev_predictions.pk"), "wb") as f:
             pickle.dump({
-                "per_sid_results": per_sid_results,
+                "results": results,
                 "tokens": self.val_dataset_obj.all_tokens,
                 "labels": self.val_dataset_obj.all_labels,
             }, f)
-        f1_cls = evaluate_cls(self.result_save_dir, dev=True)
-        f1_type = evaluate_type(self.result_save_dir, dev=True)
-        self.log("val_metric", (f1_cls + f1_type) * 1000000 + self.num_epochs_passed)
-        return ret
+
+        self.log("val_metric", (evaluation_result["raw_f1"] + evaluation_result["resolved_f1"]) * 1000000 + self.num_epochs_passed)
+        return predictions
 
     def test_step(self, *args, **kwargs):
         return self.validation_step(*args, **kwargs)
 
     def test_epoch_end(self, outputs):
-        per_sid_results, ret = self.eval_end(outputs, self.test_dataset_obj)
-        self.naive_metric(per_sid_results)
+        results, predictions = self.eval_end(outputs, self.test_dataset_obj)
+        self.full_metric(results)
 
         with open(os.path.join(self.result_save_dir, "predictions.pk"), "wb") as f:
             pickle.dump({
-                "per_sid_results": per_sid_results,
+                "results": results,
                 "tokens": self.test_dataset_obj.all_tokens,
                 "labels": self.test_dataset_obj.all_labels,
             }, f)
-        evaluate_cls(self.result_save_dir)
-        evaluate_type(self.result_save_dir)
 
     @staticmethod
     def __accuracy(output, target, topk=(1,)):
@@ -565,9 +629,10 @@ class AlignWordModel(LightningModule):
             labels_path=self.train_path_prefix + ".ner",
             tokenizer=self.tokenizer,
             is_train=True,
-            no_parentheses=self.no_parentheses,
-            prediction_together=self.prediction_together,
-            not_mask=self.not_mask,
+            label_to_entity_type_index=self.label_to_entity_type_index,
+            ablation_not_mask=self.ablation_not_mask,
+            ablation_no_brackets=self.ablation_no_brackets,
+            ablation_span_type_together=self.ablation_span_type_together,
         )
         train_dataset.prepare(negative_multiplier=self.negative_multiplier)
         train_loader = torch.utils.data.DataLoader(
@@ -587,9 +652,10 @@ class AlignWordModel(LightningModule):
                 labels_path=self.val_path_prefix + ".ner",
                 tokenizer=self.tokenizer,
                 is_train=False,
-                no_parentheses=self.no_parentheses,
-                prediction_together=self.prediction_together,
-                not_mask=self.not_mask,
+                label_to_entity_type_index=self.label_to_entity_type_index,
+                ablation_not_mask=self.ablation_not_mask,
+                ablation_no_brackets=self.ablation_no_brackets,
+                ablation_span_type_together=self.ablation_span_type_together,
             )
             val_dataset.prepare()
             self.val_dataset_obj = val_dataset
@@ -610,9 +676,10 @@ class AlignWordModel(LightningModule):
             labels_path=self.test_path_prefix + ".ner",
             tokenizer=self.tokenizer,
             is_train=False,
-            no_parentheses=self.no_parentheses,
-            prediction_together=self.prediction_together,
-            not_mask=self.not_mask,
+            label_to_entity_type_index=self.label_to_entity_type_index,
+            ablation_not_mask=self.ablation_not_mask,
+            ablation_no_brackets=self.ablation_no_brackets,
+            ablation_span_type_together=self.ablation_span_type_together,
         )
         test_dataset.prepare()
         test_loader = torch.utils.data.DataLoader(
@@ -627,7 +694,7 @@ class AlignWordModel(LightningModule):
 
     @staticmethod
     def add_model_specific_args(parent_parser):  # pragma: no-cover
-        parser = parent_parser.add_argument_group("AlignWordModel")
+        parser = parent_parser.add_argument_group("FFFNERModel")
 
         parser.add_argument(
             "-j", "--workers", default=4, type=int, metavar="N", help="number of data loading workers (default: 4)"
@@ -645,29 +712,28 @@ class AlignWordModel(LightningModule):
             "--validation_batch_size", default=128, type=int, help="validation batch size",
         )
         parser.add_argument(
-            "--lr", "--learning-rate", default=3e-5, type=float, metavar="LR", help="initial learning rate", dest="lr"
+            "--lr", "--learning-rate", default=2e-5, type=float, metavar="LR", help="initial learning rate", dest="lr"
         )
-        parser.add_argument("--pretrained_lm", default="bert-large-uncased", type=str)
+        parser.add_argument("--pretrained_lm", default="bert-base-uncased", type=str)
         parser.add_argument("--dataset_name", default="conll2003")
         parser.add_argument("--train_path_suffix", default="few_shot_5_0",
                             type=str)
-        parser.add_argument("--val_path_suffix", default="dev",
+        parser.add_argument("--val_path_suffix", default="few_shot_5_0",
                             type=str)
         parser.add_argument("--test_path_suffix", default="test", type=str)
 
         parser.add_argument("--negative_multiplier", default=3., type=float)
         parser.add_argument("--dropout", default=0.1, type=float)
 
-        parser.add_argument("--prediction_together", action="store_true")
-        parser.add_argument("--no_parentheses", action='store_true')
-        parser.add_argument("--not_mask", action='store_true')
+        parser.add_argument("--ablation_not_mask", action='store_true')
+        parser.add_argument("--ablation_no_brackets", action='store_true')
+        parser.add_argument("--ablation_span_type_together", action="store_true")
 
         return parent_parser
 
 
 def main(args: Namespace) -> None:
     if args.seed is not None:
-        # print("Not using seed, since deterministic is not possible (some operation is not supported)")
         pl.seed_everything(args.seed)
 
     if args.accelerator == "ddp":
@@ -684,7 +750,7 @@ def main(args: Namespace) -> None:
         mode="max",
     )
     trainer = pl.Trainer.from_argparse_args(args, callbacks=[checkpoint_callback])
-    model = AlignWordModel(**vars(args))
+    model = FFFNERModel(**vars(args))
     model.set_outputdir(trainer.logger.log_dir)
     if not args.evaluate:
         trainer.fit(model)
@@ -700,15 +766,12 @@ def run_cli():
         "-e", "--evaluate", dest="evaluate", action="store_true", help="evaluate model on validation set"
     )
     parent_parser.add_argument("--seed", type=int, default=42, help="seed for initializing training.")
-    parser = AlignWordModel.add_model_specific_args(parent_parser)
+    parser = FFFNERModel.add_model_specific_args(parent_parser)
 
     parser.set_defaults(profiler="simple", deterministic=False,
-                        max_epochs=200, check_val_every_n_epoch=20,
+                        max_epochs=30, check_val_every_n_epoch=1,
                         log_every_n_steps=10)
     args = parser.parse_args()
-    global label_to_entity_type_index, entity_type_names
-    label_to_entity_type_index, entity_type_names = get_entity_info(args.dataset_name)
-
     main(args)
 
 

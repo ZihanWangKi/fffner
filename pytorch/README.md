@@ -1,4 +1,4 @@
-# FFF-NER python ver.
+# FFF-NER pytorch ver.
 
 ### Setup
 Install pytorch, transformers, pytorch_lightning. 

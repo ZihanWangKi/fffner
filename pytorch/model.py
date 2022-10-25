@@ -34,6 +34,7 @@ def get_p_r_f(truth, pred):
         "recall": recall,
         "f1": f1
     }
+
 class NERDataset(torch.utils.data.Dataset):
     def __init__(self, words_path, labels_path, tokenizer, is_train,
                  label_to_entity_type_index,
@@ -49,8 +50,6 @@ class NERDataset(torch.utils.data.Dataset):
 
         self.left_bracket_1 = self.tokenize_word(" [")[0]
         self.right_bracket_1 = self.tokenize_word(" ]")[0]
-        self.left_bracket_2 = self.tokenize_word(" (")[0]
-        self.right_bracket_2 = self.tokenize_word(" )")[0]
         self.mask_id = self.tokenizer.mask_token_id
         self.cls_token_id = self.tokenizer.cls_token_id
         self.sep_token_id = self.tokenizer.sep_token_id
@@ -67,6 +66,7 @@ class NERDataset(torch.utils.data.Dataset):
             for si, (l1, l2) in enumerate(zip(f1, f2)):
                 tokens = l1.strip().split(' ')
                 labels = l2.strip().split(' ')
+                # since we are use [ and ], we replace all [, ] in the text with (, )
                 tokens = ["(" if token == "[" else token for token in tokens]
                 tokens = [")" if token == "]" else token for token in tokens]
                 yield tokens, labels
@@ -82,7 +82,7 @@ class NERDataset(torch.utils.data.Dataset):
                          span_start, span_end):
         self.id_counter += 1
         self.id_to_sentence_infos[self.id_counter] = {
-            "sid": sid,
+            "sid": sid, # sentence id
             "span_start": span_start,
             "span_end": span_end,
         }
@@ -237,7 +237,6 @@ class NERDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
-
 class Transform(torch.nn.Module):
     def __init__(self, hidden_size, target_size, dropout_rate):
         super().__init__()
@@ -284,8 +283,8 @@ class FFFNERModel(LightningModule):
         self.lr = lr
         self.pretrained_lm = pretrained_lm
         self.dropout = dropout
-
         self.negative_multiplier = negative_multiplier
+
         self.ablation_not_mask = ablation_not_mask
         self.ablation_no_brackets = ablation_no_brackets
         self.ablation_span_type_together = ablation_span_type_together
@@ -333,6 +332,7 @@ class FFFNERModel(LightningModule):
         mask_token_repr = out["mask_token_repr"]
         mask_token_repr = mask_token_repr.detach().clone()
         hidden_size = mask_token_repr.size()[1]
+        ### Testing finish
 
         self.cls_transform = Transform(hidden_size, 2, dropout)
         self.cls_loss_fct = torch.nn.CrossEntropyLoss()

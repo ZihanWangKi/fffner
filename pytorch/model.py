@@ -549,7 +549,7 @@ class FFFNERModel(LightningModule):
 
     def test_epoch_end(self, outputs):
         results, predictions = self.eval_end(outputs, self.test_dataset_obj)
-        self.full_metric(results)
+        evaluation_result = self.full_metric(results)
 
         with open(os.path.join(self.result_save_dir, "predictions.pk"), "wb") as f:
             pickle.dump({
@@ -557,6 +557,8 @@ class FFFNERModel(LightningModule):
                 "tokens": self.test_dataset_obj.all_tokens,
                 "labels": self.test_dataset_obj.all_labels,
             }, f)
+        with open(os.path.join(self.result_save_dir, "results.json"), "w") as f:
+            json.dump(evaluation_result, f)
 
     @staticmethod
     def __accuracy(output, target, topk=(1,)):
@@ -769,7 +771,7 @@ def run_cli():
     parser = FFFNERModel.add_model_specific_args(parent_parser)
 
     parser.set_defaults(profiler="simple", deterministic=False,
-                        max_epochs=30, check_val_every_n_epoch=1,
+                        max_epochs=30, check_val_every_n_epoch=5,
                         log_every_n_steps=10)
     args = parser.parse_args()
     main(args)

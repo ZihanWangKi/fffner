@@ -22,3 +22,6 @@ TOKENIZERS_PARALLELISM=false python model.py \
   --negative_multiplier 3.0 \
   --max_epochs 30
 ```
+
+### Reproduction
+We include the two scripts we used to reproduce the results in the main table `run.sh` and `get_performances.py`
